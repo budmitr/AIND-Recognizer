@@ -76,8 +76,25 @@ class SelectorBIC(ModelSelector):
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        model_evaluations = []
+        for n_components in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                model = GaussianHMM(n_components=n_components, covariance_type="diag", n_iter=1000)
+                model.fit(self.X, self.lengths)
+
+                try:
+                    log_loss = model.score(self.X, self.lengths)
+                except ValueError:
+                    log_loss = -99999
+
+                num_params = 2 * n_components * len(self.sequences[0][0])
+                BIC = -2 * log_loss + num_params * np.log(len(self.X))
+                model_evaluations.append((n_components, BIC, model))
+            except ValueError:
+                pass
+
+        model_evaluations = sorted(model_evaluations, key=lambda t: -t[1])
+        return model_evaluations[0][2]
 
 
 class SelectorDIC(ModelSelector):
@@ -92,8 +109,44 @@ class SelectorDIC(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        model_evaluations = []
+        for n_components in range(self.min_n_components, self.max_n_components + 1):
+            model = GaussianHMM(n_components=n_components, covariance_type="diag", n_iter=1000)
+
+            try:
+                model.fit(self.X, self.lengths)
+            except ValueError:
+                continue
+
+            try:
+                log_loss_Xi = model.score(self.X, self.lengths)
+            except ValueError:
+                log_loss_Xi = -99999
+
+            log_loss_sum_Xj = 0.0
+            m = 0
+            for word in self.words.keys():
+                if word == self.this_word:
+                    continue
+                word_x, word_len = self.hwords[word]
+
+                try:
+                    log_loss_Xj = model.score(word_x, word_len)
+                except ValueError:
+                    continue
+
+                log_loss_sum_Xj += log_loss_Xj
+                m += 1
+
+            if m == 0:
+                DIC = log_loss_Xi
+            else:
+                DIC = log_loss_Xi - log_loss_sum_Xj / m
+
+            model_evaluations.append((n_components, DIC, model))
+
+        model_evaluations = sorted(model_evaluations, key=lambda t: -t[1])
+        return model_evaluations[0][2]
 
 
 class SelectorCV(ModelSelector):
@@ -104,5 +157,41 @@ class SelectorCV(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        n_splits = min(len(self.sequences), 3)
+        model_evaluations = []
+
+        for n_components in range(self.min_n_components, self.max_n_components + 1):
+            losses = []
+            model = None
+
+            if n_splits == 1:
+                model = self.base_model(n_components)
+                if model is None:
+                    continue
+                try:
+                    log_loss = model.score(self.X, self.lengths)
+                except ValueError:
+                    log_loss = -99999
+
+                model_evaluations.append((n_components, log_loss, model))
+                continue
+
+
+            kf = KFold(n_splits=n_splits, shuffle=True, random_state=self.random_state)
+            for train_index, test_index in kf.split(self.sequences):
+                x_train, len_train = combine_sequences(train_index, self.sequences)
+                x_test,  len_test = combine_sequences(test_index, self.sequences)
+                try:
+                    model = GaussianHMM(n_components=n_components, covariance_type="diag", n_iter=1000)
+                    model.fit(x_train, len_train)
+                    log_loss = model.score(x_test, len_test)
+                    losses.append(log_loss)
+                except ValueError:
+                    pass
+
+            if len(losses):
+                model_evaluations.append((n_components, np.mean(losses), model))
+
+        model_evaluations = sorted(model_evaluations, key=lambda t: -t[1])
+        return model_evaluations[0][2]
+
